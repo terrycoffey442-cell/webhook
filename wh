@@ -1,0 +1,309 @@
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local env = getfenv()
+local getgenv = env.getgenv or function() return _G end
+
+local DEFAULT_CONFIG = {
+    WebhookUrl = "",
+    SendWebhook = true,
+}
+
+local function MergeConfig(target, source)
+    for k, v in pairs(source) do
+        if type(v) == "table" and type(target[k]) == "table" then
+            MergeConfig(target[k], v)
+        else
+            target[k] = v
+        end
+    end
+    return target
+end
+
+getgenv().CONFIG = getgenv().CONFIG or {}
+local CONFIG = MergeConfig(DEFAULT_CONFIG, getgenv().CONFIG)
+getgenv().CONFIG = CONFIG
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    task.wait(0.2)
+    LocalPlayer = Players.LocalPlayer
+end
+
+local HttpRequest = (syn and syn.request)
+    or (http and http.request)
+    or http_request
+    or request
+    or (fluxus and fluxus.request)
+
+repeat task.wait(0.2) until ReplicatedStorage:FindFirstChild("Library")
+local Library = ReplicatedStorage.Library
+local DirectoryMod = Library:WaitForChild("Directory", 30)
+local Client = Library:WaitForChild("Client", 30)
+local SaveMod = Client:WaitForChild("Save", 30)
+
+repeat task.wait(0.3) until SaveMod and require(SaveMod).Get() and require(SaveMod).Get().Inventory
+
+local Directory = require(DirectoryMod)
+local Save = require(SaveMod)
+local PetItem = require(Library.Items:WaitForChild("PetItem", 30))
+local RAPCmds = require(Client:WaitForChild("RAPCmds", 30))
+local CosmicCmds = require(Client:WaitForChild("CosmicCmds", 30))
+
+local function FormatNumber(n)
+    if not n or type(n) ~= "number" then return "nil" end
+    if n >= 1e12 then return string.format("%.2fT", n / 1e12)
+    elseif n >= 1e9 then return string.format("%.2fB", n / 1e9)
+    elseif n >= 1e6 then return string.format("%.2fM", n / 1e6)
+    elseif n >= 1e3 then return string.format("%.2fK", n / 1e3)
+    else return tostring(math.floor(n)) end
+end
+
+local function GetVariantTag(pt, sh)
+    local tags = {}
+    if pt == 1 then table.insert(tags, "Golden")
+    elseif pt == 2 then table.insert(tags, "Rainbow") end
+    if sh == true then table.insert(tags, "Shiny") end
+    return #tags > 0 and ("[" .. table.concat(tags, " ") .. "] ") or ""
+end
+
+local function BuildPetItem(id, pt, sh)
+    local ok, item = pcall(function() return PetItem(id) end)
+    if not ok or not item then return nil end
+    if pt == 1 then
+        item:SetGolden(true)
+    elseif pt == 2 then
+        item:SetRainbow(true)
+    end
+    if sh == true then
+        item:SetShiny(true)
+    end
+    return item
+end
+
+local function GetCosmicValue(item)
+    local cosmicVal = nil
+    if item and CosmicCmds and CosmicCmds.Get then
+        pcall(function()
+            cosmicVal = CosmicCmds.Get(item)
+        end)
+    end
+    return cosmicVal
+end
+
+local function ScanSpecialPets()
+    local saveData = Save.Get()
+    if not saveData or not saveData.Inventory or not saveData.Inventory.Pet then
+        return {
+            Huges = {},
+            Titanics = {},
+            TotalHugeCount = 0,
+            TotalTitanicCount = 0,
+            TotalHugeRap = 0,
+            TotalTitanicRap = 0,
+            TotalCosmic = 0,
+        }
+    end
+
+    local grouped = {}
+    local totalHugeCount = 0
+    local totalTitanicCount = 0
+    local totalHugeRap = 0
+    local totalTitanicRap = 0
+    local totalHugeCosmic = 0
+    local totalTitanicCosmic = 0
+
+    for _, petData in pairs(saveData.Inventory.Pet) do
+        local dir = Directory.Pets[petData.id]
+        if dir and (dir.huge or dir.titanic) then
+            local category = dir.titanic and "Titanic" or "Huge"
+            local key = string.format("%s_%s_%s", petData.id, tostring(petData.pt or 0), tostring(petData.sh or false))
+            local amount = petData._am or petData.am or 1
+
+            if not grouped[key] then
+                local item = BuildPetItem(petData.id, petData.pt, petData.sh)
+                local rap = item and RAPCmds.Get(item) or nil
+                local cosmic = GetCosmicValue(item)
+
+                grouped[key] = {
+                    Category = category,
+                    Id = petData.id,
+                    Pt = petData.pt,
+                    Sh = petData.sh,
+                    DisplayName = GetVariantTag(petData.pt, petData.sh) .. petData.id,
+                    Count = amount,
+                    SingleRAP = rap,
+                    Cosmic = cosmic,
+                }
+            else
+                grouped[key].Count = grouped[key].Count + amount
+            end
+        end
+    end
+
+    local huges = {}
+    local titanics = {}
+    local hugeBreakdown = { nor = 0, gold = 0, rb = 0, shiny = 0, gold_shiny = 0, shiny_rb = 0 }
+    local titanicBreakdown = { nor = 0, gold = 0, rb = 0, shiny = 0, gold_shiny = 0, shiny_rb = 0 }
+
+    local function GetVariantType(pt, sh)
+        pt = pt or 0
+        sh = (sh == true)
+        if pt == 1 then
+            return sh and "gold_shiny" or "gold"
+        elseif pt == 2 then
+            return sh and "shiny_rb" or "rb"
+        else
+            return sh and "shiny" or "nor"
+        end
+    end
+
+    for _, item in pairs(grouped) do
+        local singleRap = item.SingleRAP or 0
+        local subtotalRap = singleRap * item.Count
+        local subtotalCosmic = (item.Cosmic and type(item.Cosmic) == "number") and (item.Cosmic * item.Count) or 0
+        local vType = GetVariantType(item.Pt, item.Sh)
+
+        if item.Category == "Titanic" then
+            totalTitanicCount = totalTitanicCount + item.Count
+            totalTitanicRap = totalTitanicRap + subtotalRap
+            totalTitanicCosmic = totalTitanicCosmic + subtotalCosmic
+            titanicBreakdown[vType] = titanicBreakdown[vType] + item.Count
+            table.insert(titanics, item)
+        else
+            totalHugeCount = totalHugeCount + item.Count
+            totalHugeRap = totalHugeRap + subtotalRap
+            totalHugeCosmic = totalHugeCosmic + subtotalCosmic
+            hugeBreakdown[vType] = hugeBreakdown[vType] + item.Count
+            table.insert(huges, item)
+        end
+    end
+
+    local function SortItems(a, b)
+        local rapA = (a.SingleRAP or 0) * a.Count
+        local rapB = (b.SingleRAP or 0) * b.Count
+        if rapA ~= rapB then
+            return rapA > rapB
+        end
+        return a.Count > b.Count
+    end
+
+    table.sort(huges, SortItems)
+    table.sort(titanics, SortItems)
+
+    return {
+        Huges = huges,
+        Titanics = titanics,
+        TotalHugeCount = totalHugeCount,
+        TotalTitanicCount = totalTitanicCount,
+        TotalHugeRap = totalHugeRap,
+        TotalTitanicRap = totalTitanicRap,
+        TotalHugeCosmic = totalHugeCosmic,
+        TotalTitanicCosmic = totalTitanicCosmic,
+        HugeBreakdown = hugeBreakdown,
+        TitanicBreakdown = titanicBreakdown,
+    }
+end
+
+local function BuildDiscordPayload(stats)
+    local totalRapCombined = stats.TotalHugeRap + stats.TotalTitanicRap
+    local totalCosmicCombined = stats.TotalHugeCosmic + stats.TotalTitanicCosmic
+
+    local function FormatBreakdown(bd)
+        return string.format("nor: %d | gold: %d | rb: %d | shiny: %d | gold_shiny: %d | shiny_rb: %d",
+            bd.nor or 0, bd.gold or 0, bd.rb or 0, bd.shiny or 0, bd.gold_shiny or 0, bd.shiny_rb or 0)
+    end
+
+    local descSections = {}
+
+    table.insert(descSections, string.format(
+        "📊 **Tổng quan**\n**Total Huges:** %d pet (%d loại) %s\n**Total Titanics:** %d pet (%d loại) %s\n**Total RAP:** %s (Huge: %s | TTN: %s)\n**Total Cosmic Value:** %s (Huge: %s | TTN: %s)",
+        stats.TotalHugeCount,
+        #stats.Huges,
+        FormatBreakdown(stats.HugeBreakdown),
+        stats.TotalTitanicCount,
+        #stats.Titanics,
+        FormatBreakdown(stats.TitanicBreakdown),
+        FormatNumber(totalRapCombined),
+        FormatNumber(stats.TotalHugeRap),
+        FormatNumber(stats.TotalTitanicRap),
+        FormatNumber(totalCosmicCombined),
+        FormatNumber(stats.TotalHugeCosmic),
+        FormatNumber(stats.TotalTitanicCosmic)
+    ))
+
+    local function AppendCategory(categoryTitle, items)
+        if #items == 0 then return end
+        local lines = { categoryTitle }
+        for _, item in ipairs(items) do
+            local rapStr = item.SingleRAP and FormatNumber(item.SingleRAP) or "nil"
+            local cvStr = item.Cosmic and FormatNumber(item.Cosmic) or "nil"
+            local line = string.format("• `%s` x%d | **RAP:** %s | **CV:** %s",
+                item.DisplayName,
+                item.Count,
+                rapStr,
+                cvStr
+            )
+            table.insert(lines, line)
+        end
+        table.insert(descSections, table.concat(lines, "\n"))
+    end
+
+    AppendCategory("**list_titanic:**", stats.Titanics)
+    AppendCategory("**list_huge:**", stats.Huges)
+
+    local fullDescription = table.concat(descSections, "\n\n")
+
+    local embed = {
+        color = 0x5865F2,
+        author = {
+            name = string.format("Username: %s", LocalPlayer.Name)
+        },
+        description = fullDescription,
+    }
+
+    return {
+        embeds = { embed }
+    }
+end
+
+local function SendWebhook(payload)
+    if not CONFIG.WebhookUrl or CONFIG.WebhookUrl == "" or not CONFIG.WebhookUrl:find("http") then
+        return false
+    end
+
+    if not HttpRequest then
+        return false
+    end
+
+    local success = pcall(function()
+        HttpRequest({
+            Url = CONFIG.WebhookUrl,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json"
+            },
+            Body = HttpService:JSONEncode(payload)
+        })
+    end)
+
+    return success
+end
+
+local function RunInventoryReport()
+    local stats = ScanSpecialPets()
+
+    if CONFIG.SendWebhook then
+        local payload = BuildDiscordPayload(stats)
+        SendWebhook(payload)
+    end
+
+    return stats
+end
+
+RunInventoryReport()
