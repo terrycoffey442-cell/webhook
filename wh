@@ -114,7 +114,10 @@ local function ScanSpecialPets()
             TotalTitanicCount = 0,
             TotalHugeRap = 0,
             TotalTitanicRap = 0,
-            TotalCosmic = 0,
+            TotalHugeCosmic = 0,
+            TotalTitanicCosmic = 0,
+            HugeBreakdown = { nor = 0, gold = 0, rb = 0, shiny = 0, gold_shiny = 0, shiny_rb = 0 },
+            TitanicBreakdown = { nor = 0, gold = 0, rb = 0, shiny = 0, gold_shiny = 0, shiny_rb = 0 },
         }
     end
 
@@ -218,69 +221,7 @@ local function ScanSpecialPets()
     }
 end
 
-local function BuildDiscordPayload(stats)
-    local totalRapCombined = stats.TotalHugeRap + stats.TotalTitanicRap
-    local totalCosmicCombined = stats.TotalHugeCosmic + stats.TotalTitanicCosmic
-
-    local function FormatBreakdown(bd)
-        return string.format("nor: %d | gold: %d | rb: %d | shiny: %d | gold_shiny: %d | shiny_rb: %d",
-            bd.nor or 0, bd.gold or 0, bd.rb or 0, bd.shiny or 0, bd.gold_shiny or 0, bd.shiny_rb or 0)
-    end
-
-    local descSections = {}
-
-    table.insert(descSections, string.format(
-        "📊 **Tổng quan**\n**Total Huges:** %d pet (%d loại) %s\n**Total Titanics:** %d pet (%d loại) %s\n**Total RAP:** %s (Huge: %s | TTN: %s)\n**Total Cosmic Value:** %s (Huge: %s | TTN: %s)",
-        stats.TotalHugeCount,
-        #stats.Huges,
-        FormatBreakdown(stats.HugeBreakdown),
-        stats.TotalTitanicCount,
-        #stats.Titanics,
-        FormatBreakdown(stats.TitanicBreakdown),
-        FormatNumber(totalRapCombined),
-        FormatNumber(stats.TotalHugeRap),
-        FormatNumber(stats.TotalTitanicRap),
-        FormatNumber(totalCosmicCombined),
-        FormatNumber(stats.TotalHugeCosmic),
-        FormatNumber(stats.TotalTitanicCosmic)
-    ))
-
-    local function AppendCategory(categoryTitle, items)
-        if #items == 0 then return end
-        local lines = { categoryTitle }
-        for _, item in ipairs(items) do
-            local rapStr = item.SingleRAP and FormatNumber(item.SingleRAP) or "nil"
-            local cvStr = item.Cosmic and FormatNumber(item.Cosmic) or "nil"
-            local line = string.format("• `%s` x%d | **RAP:** %s | **CV:** %s",
-                item.DisplayName,
-                item.Count,
-                rapStr,
-                cvStr
-            )
-            table.insert(lines, line)
-        end
-        table.insert(descSections, table.concat(lines, "\n"))
-    end
-
-    AppendCategory("**list_titanic:**", stats.Titanics)
-    AppendCategory("**list_huge:**", stats.Huges)
-
-    local fullDescription = table.concat(descSections, "\n\n")
-
-    local embed = {
-        color = 0x5865F2,
-        author = {
-            name = string.format("Username: %s", LocalPlayer.Name)
-        },
-        description = fullDescription,
-    }
-
-    return {
-        embeds = { embed }
-    }
-end
-
-local function SendWebhook(payload)
+local function SendWebhookPayload(payload)
     if not CONFIG.WebhookUrl or CONFIG.WebhookUrl == "" or not CONFIG.WebhookUrl:find("http") then
         warn("[Webhook Error] WebhookUrl chưa được cấu hình hoặc bị rỗng! Kiểm tra lại getgenv().CONFIG.WebhookUrl")
         return false
@@ -311,12 +252,113 @@ local function SendWebhook(payload)
     return success
 end
 
+local function DispatchDiscordReports(stats)
+    local totalRapCombined = (stats.TotalHugeRap or 0) + (stats.TotalTitanicRap or 0)
+    local totalCosmicCombined = (stats.TotalHugeCosmic or 0) + (stats.TotalTitanicCosmic or 0)
+
+    local function FormatBreakdown(bd)
+        bd = bd or {}
+        return string.format("nor: %d | gold: %d | rb: %d | shiny: %d | gold_shiny: %d | shiny_rb: %d",
+            bd.nor or 0, bd.gold or 0, bd.rb or 0, bd.shiny or 0, bd.gold_shiny or 0, bd.shiny_rb or 0)
+    end
+
+    local summaryText = string.format(
+        "📊 **Tổng quan**\n**Total Huges:** %d pet (%d loại) %s\n**Total Titanics:** %d pet (%d loại) %s\n**Total RAP:** %s (Huge: %s | TTN: %s)\n**Total Cosmic Value:** %s (Huge: %s | TTN: %s)",
+        stats.TotalHugeCount or 0,
+        #stats.Huges,
+        FormatBreakdown(stats.HugeBreakdown),
+        stats.TotalTitanicCount or 0,
+        #stats.Titanics,
+        FormatBreakdown(stats.TitanicBreakdown),
+        FormatNumber(totalRapCombined),
+        FormatNumber(stats.TotalHugeRap or 0),
+        FormatNumber(stats.TotalTitanicRap or 0),
+        FormatNumber(totalCosmicCombined),
+        FormatNumber(stats.TotalHugeCosmic or 0),
+        FormatNumber(stats.TotalTitanicCosmic or 0)
+    )
+
+    local allEntries = {}
+
+    if #stats.Titanics > 0 then
+        table.insert(allEntries, { isHeader = true, text = "**list_titanic:**" })
+        for _, item in ipairs(stats.Titanics) do
+            local rapStr = item.SingleRAP and FormatNumber(item.SingleRAP) or "nil"
+            local cvStr = item.Cosmic and FormatNumber(item.Cosmic) or "nil"
+            table.insert(allEntries, {
+                isHeader = false,
+                text = string.format("• `%s` x%d | **RAP:** %s | **CV:** %s", item.DisplayName, item.Count, rapStr, cvStr)
+            })
+        end
+    end
+
+    if #stats.Huges > 0 then
+        table.insert(allEntries, { isHeader = true, text = "**list_huge:**" })
+        for _, item in ipairs(stats.Huges) do
+            local rapStr = item.SingleRAP and FormatNumber(item.SingleRAP) or "nil"
+            local cvStr = item.Cosmic and FormatNumber(item.Cosmic) or "nil"
+            table.insert(allEntries, {
+                isHeader = false,
+                text = string.format("• `%s` x%d | **RAP:** %s | **CV:** %s", item.DisplayName, item.Count, rapStr, cvStr)
+            })
+        end
+    end
+
+    local MAX_CHUNK_LEN = 3500
+    local messageDescriptions = {}
+    local currentDesc = summaryText
+    local currentHeader = nil
+
+    for _, entry in ipairs(allEntries) do
+        if entry.isHeader then
+            currentHeader = entry.text
+            local prospective = currentDesc .. "\n\n" .. entry.text
+            if #prospective > MAX_CHUNK_LEN then
+                table.insert(messageDescriptions, currentDesc)
+                currentDesc = entry.text
+            else
+                currentDesc = prospective
+            end
+        else
+            local lineText = entry.text
+            local prospective = currentDesc .. "\n" .. lineText
+            if #prospective > MAX_CHUNK_LEN then
+                table.insert(messageDescriptions, currentDesc)
+                currentDesc = (currentHeader and (currentHeader:sub(1, -3) .. " (tiếp theo):**\n") or "") .. lineText
+            else
+                currentDesc = prospective
+            end
+        end
+    end
+
+    if #currentDesc > 0 then
+        table.insert(messageDescriptions, currentDesc)
+    end
+
+    for i, desc in ipairs(messageDescriptions) do
+        local payload = {
+            embeds = {
+                {
+                    color = 0x5865F2,
+                    author = {
+                        name = string.format("Username: %s", LocalPlayer.Name)
+                    },
+                    description = desc,
+                }
+            }
+        }
+        SendWebhookPayload(payload)
+        if i < #messageDescriptions then
+            task.wait(1.0)
+        end
+    end
+end
+
 local function RunInventoryReport()
     local stats = ScanSpecialPets()
 
     if CONFIG.SendWebhook then
-        local payload = BuildDiscordPayload(stats)
-        SendWebhook(payload)
+        DispatchDiscordReports(stats)
     end
 
     return stats
