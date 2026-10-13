@@ -40,18 +40,26 @@ local HttpRequest = (syn and syn.request)
     or http_request
     or request
     or (fluxus and fluxus.request)
+    or (getgenv and getgenv().request)
+    or (getgenv and getgenv().http_request)
 
 repeat task.wait(0.2) until ReplicatedStorage:FindFirstChild("Library")
 local Library = ReplicatedStorage.Library
 local DirectoryMod = Library:WaitForChild("Directory", 30)
 local Client = Library:WaitForChild("Client", 30)
 local SaveMod = Client:WaitForChild("Save", 30)
+local ItemsFolder = Library:WaitForChild("Items", 30)
 
-repeat task.wait(0.3) until SaveMod and require(SaveMod).Get() and require(SaveMod).Get().Inventory
+repeat
+    task.wait(0.3)
+    local ok, res = pcall(function()
+        return SaveMod and require(SaveMod).Get() and require(SaveMod).Get().Inventory
+    end)
+until ok and res
 
 local Directory = require(DirectoryMod)
 local Save = require(SaveMod)
-local PetItem = require(Library.Items:WaitForChild("PetItem", 30))
+local PetItem = require(ItemsFolder:WaitForChild("PetItem", 30))
 local RAPCmds = require(Client:WaitForChild("RAPCmds", 30))
 local CosmicCmds = require(Client:WaitForChild("CosmicCmds", 30))
 
@@ -274,15 +282,17 @@ end
 
 local function SendWebhook(payload)
     if not CONFIG.WebhookUrl or CONFIG.WebhookUrl == "" or not CONFIG.WebhookUrl:find("http") then
+        warn("[Webhook Error] WebhookUrl chưa được cấu hình hoặc bị rỗng! Kiểm tra lại getgenv().CONFIG.WebhookUrl")
         return false
     end
 
     if not HttpRequest then
+        warn("[Webhook Error] Executor này không hỗ trợ HttpRequest (request / http_request)!")
         return false
     end
 
-    local success = pcall(function()
-        HttpRequest({
+    local success, res = pcall(function()
+        return HttpRequest({
             Url = CONFIG.WebhookUrl,
             Method = "POST",
             Headers = {
@@ -291,6 +301,12 @@ local function SendWebhook(payload)
             Body = HttpService:JSONEncode(payload)
         })
     end)
+
+    if not success then
+        warn("[Webhook Error] Gửi thất bại:", tostring(res))
+    elseif res and res.StatusCode and res.StatusCode >= 400 then
+        warn(string.format("[Webhook Error] Discord HTTP %d: %s", res.StatusCode, tostring(res.Body)))
+    end
 
     return success
 end
